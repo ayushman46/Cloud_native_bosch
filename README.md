@@ -1,6 +1,7 @@
 # ChaosAI for OpenMeter
 
 ChaosAI is a separate FastAPI and React application for bounded chaos experiments against an OpenMeter deployment on another laptop. The ChaosAI container never accesses the remote Docker daemon. Its Injector calls a restricted, authenticated Chaos Control API on the OpenMeter host. The control API and its independent watchdog must be deployed by the infrastructure teammate; this repository provides a contract and an in-process mock, not remote Docker control.
+The repository also contains a teammate's separately developed Observer and Analyzer service at `chaos-platform/backend`. Its 76 tests run independently; the Docker Compose entrypoint in this README runs the complete root-level ChaosAI application, while the teammate service remains available for follow-on integration.
 
 ## Run the complete mock application
 
