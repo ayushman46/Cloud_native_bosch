@@ -1,0 +1,16 @@
+{
+  "name": "chaosai-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^8.3.4"
+  }
+}
