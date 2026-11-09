@@ -1,9 +1,12 @@
 import asyncio
+import logging
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from .schemas import Experiment, Status, TERMINAL, PlanRequest, utcnow
 from .safety import validate_plan, SafetyError
 from .controller import ControllerError
+
+log = logging.getLogger('uvicorn.error')
 
 
 class FlowState(TypedDict):
@@ -11,8 +14,21 @@ class FlowState(TypedDict):
     request: PlanRequest
 
 
+def planning_context(store, limit: int = 6) -> dict:
+    """What the planner may use to pick the most informative experiment: topology plus what already happened."""
+    from .insight.monitoring.dependency_map import OPENMETER_DEPENDENCY_MAP
+    past = []
+    for e in store.list()[:limit]:
+        if e.plan and e.status.value in ('COMPLETED', 'RECOVERY_FAILED'):
+            res = (e.report.metrics.get('resilience') if e.report else None) or {}
+            past.append({'fault': e.plan.failure_type.value, 'target': e.plan.target_service, 'status': e.status.value,
+                         'score': res.get('score'), 'stopped_by_safety_controller': e.safety_stop is not None})
+    return {'dependency_map': [f'{x.source} {x.relation} {x.target}' for x in OPENMETER_DEPENDENCY_MAP], 'past_experiments': past}
+
+
 class Runner:
-    def __init__(self, settings, store, controller, observer, planner, analyzer):
+    def __init__(self, settings, store, controller, observer, planner, analyzer, insight=None):
+        self.insight = insight  # chaosai.insight Container (deep Observer + diagnostic Analyzer); real mode only
         self.settings, self.store, self.controller = settings, store, controller
         self.observer, self.planner, self.analyzer = observer, planner, analyzer
         self.tasks: dict[str, asyncio.Task] = {}
@@ -44,6 +60,7 @@ class Runner:
         if status not in {Status.failed, Status.rejected, Status.aborted, Status.recovery_failed, Status.rolling_back} and next_states.get(exp.status) != status:
             raise RuntimeError(f'Invalid transition: {exp.status} -> {status}')
         exp.status = status
+        log.warning('EXPERIMENT %s -> %s%s', exp.experiment_id[:12], status.value, f' ({exp.plan.failure_type.value} on {exp.plan.target_service})' if exp.plan else '')
         exp.timestamps[status.value.lower() + '_at'] = utcnow()
         exp.history.append({'status': status.value, 'at': utcnow().isoformat()})
         for k, v in fields.items():
@@ -161,6 +178,51 @@ class Runner:
         if eid in self.cancelled:
             raise RuntimeError('Experiment aborted by user')
 
+    # ---- deep Observer / diagnostic Analyzer (real mode). Failures here never break the experiment. ----
+    async def _insight_start(self, exp):
+        if not self.insight:
+            return
+        try:
+            mon = await self.insight.observer.start_baseline(exp.experiment_id, exp.plan.target_service)
+            deadline = asyncio.get_running_loop().time() + 20
+            while not mon.baseline_ready() and asyncio.get_running_loop().time() < deadline:
+                self._check_abort(exp.experiment_id)
+                await asyncio.sleep(0.5)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            exp.error = (exp.error or '') + f'insight observer unavailable: {exc}'
+            self.insight = None
+
+    def _insight_event(self, exp, status: str):
+        if not self.insight or exp.experiment_id not in self.insight.observer.monitors:
+            return
+        from .insight.schemas.injection import InjectionEvent, InjectionTimestamps
+        ts = exp.timestamps
+        try:
+            self.insight.observer.handle_event(InjectionEvent(
+                experiment_id=exp.experiment_id, application=exp.plan.application, target_service=exp.plan.target_service,
+                failure_type=exp.plan.failure_type.value, status=status, injection_success=bool(exp.controller and exp.controller.injection_verified),
+                timestamps=InjectionTimestamps(dispatched_at=ts.get('dispatched_at'), fault_activated_at=ts.get('fault_activated_at'),
+                                               rollback_started_at=ts.get('rollback_started_at'), rollback_completed_at=ts.get('rollback_completed_at')),
+                parameters=exp.plan.parameters.model_dump(exclude_none=True)))
+        except Exception as exc:
+            exp.error = (exp.error or '') + f' insight event failed: {exc}'
+
+    async def _insight_finish(self, exp):
+        if not self.insight or exp.experiment_id not in self.insight.observer.monitors:
+            return
+        from .insight.agents.evidence import build_diagnostic_evidence
+        try:
+            report = await self.insight.observer.finalize(exp.experiment_id)
+            exp.observation = report.model_dump(mode='json')
+            result = await self.insight.analyzer.analyze(build_diagnostic_evidence(report))
+            self.insight.repo.save_analysis(result)
+            exp.diagnosis = result.model_dump(mode='json')
+        except Exception as exc:
+            exp.diagnosis = {'status': 'unavailable', 'error': str(exc)}
+        self.store.save(exp)
+
     async def _plan(self, state: FlowState):
         eid = state['experiment_id']
         exp = self.store.get(eid)
@@ -170,7 +232,7 @@ class Runner:
         capabilities = await self.controller.capabilities()
         plan = getattr(state['request'], 'approved_plan', None)
         if plan is None:
-            plan = await self.planner.plan(state['request'], capabilities)
+            plan = await self.planner.plan(state['request'], capabilities, planning_context(self.store))
         else:
             plan = plan.model_copy(deep=True)
             requested_fault = state['request'].preferred_fault
@@ -195,6 +257,7 @@ class Runner:
         eid = state['experiment_id']
         exp = self.store.get(eid)
         self._update(exp, Status.baselining)
+        await self._insight_start(exp)
         if self.settings.enable_synthetic_events:
             event = await self.observer.send_event(eid, 'baseline')
             exp.events.append(event)
@@ -243,11 +306,35 @@ class Runner:
                     raise RuntimeError('Controller activation evidence does not match the planned fault and target')
                 exp.timestamps['fault_activated_at'] = status.fault_activated_at
                 self._update(exp, Status.active)
+                self._insight_event(exp, 'active')
                 return {}
             if status.status in ('failed', 'rejected', 'aborted'):
                 raise RuntimeError(f'Controller failed to activate fault: {status.message}')
             await asyncio.sleep(self.settings.poll_seconds)
         raise RuntimeError('Fault activation was not verified before timeout')
+
+    async def _threshold_guard(self, exp):
+        """Independent safety check: stop the fault early when measured impact crosses a limit."""
+        if not self.settings.safety_auto_stop:
+            return
+        recent = [p for p in exp.probes if p.phase == 'fault'][-self.settings.abort_min_probes:]
+        if len(recent) < self.settings.abort_min_probes:
+            return
+        error_rate = sum(not p.reachable for p in recent) / len(recent)
+        slowest = max((p.latency_ms for p in recent if p.latency_ms is not None), default=0)
+        reason = None
+        if error_rate >= self.settings.abort_error_rate:
+            reason = f'error rate {error_rate:.0%} over the last {len(recent)} probes reached the {self.settings.abort_error_rate:.0%} limit'
+        elif slowest >= self.settings.abort_latency_ms:
+            reason = f'probe latency {slowest:.0f} ms reached the {self.settings.abort_latency_ms:.0f} ms limit'
+        if reason is None:
+            return
+        log.warning('SAFETY STOP      experiment %s: %s -> asking controller to roll back', exp.experiment_id[:12], reason)
+        exp.safety_stop = {'reason': reason, 'at': utcnow().isoformat(), 'error_rate': error_rate, 'max_latency_ms': slowest}
+        exp.timestamps['safety_stop_at'] = utcnow()
+        self.store.save(exp)
+        exp.controller = await self._stop(exp)
+        self.store.save(exp)
 
     async def _observe(self, state: FlowState):
         eid = state['experiment_id']
@@ -263,6 +350,8 @@ class Runner:
                 exp.events.append(await self.observer.send_event(eid, 'fault'))
                 fault_event_sent = True
             exp.probes.extend(await self.observer.probe(phase))
+            if phase == 'fault' and exp.safety_stop is None:
+                await self._threshold_guard(exp)
             if self.settings.enable_synthetic_events:
                 count = await self.observer.query_count(eid)
                 exp.meter_samples.append({'at': utcnow().isoformat(), 'phase': phase, 'accepted_events': sum(e.accepted for e in exp.events), 'metered_count': count, 'error': self.observer.last_query_error, 'simulated': self.settings.mode == 'mock'})
@@ -286,6 +375,7 @@ class Runner:
         if not status.rollback_evidence or status.rollback_evidence.target_service != exp.plan.target_service or (self.settings.mode == 'real' and status.rollback_evidence.simulated):
             raise RuntimeError('Controller rollback evidence does not match the planned target')
         exp.timestamps['rollback_completed_at'] = status.rollback_completed_at or utcnow()
+        self._insight_event(exp, 'rolled_back')
         self._update(exp, Status.verifying_recovery)
         if self.settings.enable_synthetic_events:
             recovery_event = await self.observer.send_event(eid, 'recovery')
@@ -309,8 +399,27 @@ class Runner:
             if http_ok and metering_ok:
                 recovered = True
                 exp.timestamps['functional_recovery_at'] = utcnow()
+                self.store.save(exp)  # _analyze reloads the experiment from the store
                 break
             await asyncio.sleep(self.settings.poll_seconds)
+        if not recovered and http_ok and self.settings.enable_synthetic_events and recovery_event.accepted and self.settings.late_metering_seconds > 0:
+            # The service is back but usage is still catching up. Wait longer to tell a lagging pipeline from lost events.
+            window_end = asyncio.get_running_loop().time()
+            late_deadline = window_end + self.settings.late_metering_seconds
+            accepted = sum(event.accepted for event in exp.events)
+            while asyncio.get_running_loop().time() < late_deadline:
+                self._check_abort(eid)
+                exp.metered_count = await self.observer.query_count(eid)
+                self.store.save(exp)
+                if exp.metered_count is not None and exp.metered_count == accepted:
+                    lag = asyncio.get_running_loop().time() - window_end
+                    recovered = True
+                    exp.timestamps['functional_recovery_at'] = utcnow()
+                    exp.recovery_note = (f'Usage metering lagged: the service was healthy, but the last accepted event was only counted '
+                                         f'{lag:.0f} s after the {self.settings.recovery_seconds:.0f} s recovery window. Events were delayed, not lost.')
+                    self.store.save(exp)
+                    break
+                await asyncio.sleep(max(self.settings.poll_seconds, 1))
         if not recovered:
             exp.report = await self.analyzer.analyze(exp.probes, exp.controller.rollback_verified, exp.events, exp.metered_count, exp.timestamps)
             self._update(exp, Status.recovery_failed, error='OpenMeter functional recovery was not verified')
@@ -322,6 +431,9 @@ class Runner:
         exp = self.store.get(eid)
         self._check_abort(eid)
         exp.report = await self.analyzer.analyze(exp.probes, exp.controller.rollback_verified, exp.events, exp.metered_count, exp.timestamps)
+        if exp.recovery_note:
+            exp.report.limitations.append(exp.recovery_note)
+        await self._insight_finish(exp)
         self._check_abort(eid)
         self._update(exp, Status.completed)
         return {}

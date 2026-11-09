@@ -31,6 +31,9 @@ class RemoteController:
     async def capabilities(self):
         return await self._request('GET', '/api/capabilities')
 
+    async def topology(self):
+        return await self._request('GET', '/api/topology')
+
     async def submit(self, plan: Plan) -> ControllerStatus:
         body = plan.model_dump(mode='json', include={'experiment_id','application','target_service','failure_type','parameters'})
         try:
@@ -87,6 +90,9 @@ class MockController:
 
     async def health(self):
         return {'status': 'ok', 'simulated': True}
+
+    async def topology(self):
+        return {'project': 'mock', 'simulated': True, 'services': []}
 
     async def capabilities(self):
         return {'targets': self.settings.targets, 'fault_types': ['application_crash','network_latency','service_restart','traffic_spike'], 'watchdog_supported': True, 'network_latency_ready': True, 'proxy_targets': self.settings.targets, 'traffic_spike_ready': True, 'simulated': True}

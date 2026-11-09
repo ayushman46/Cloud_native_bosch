@@ -38,7 +38,7 @@ Detection rules and defaults: `app/monitoring/detection.py` (consecutive failure
 |---|---|
 | Models, probes, metrics, detection, lifecycle, report, API | implemented, tested against a fake OpenMeter |
 | Analyzer, NVIDIA client, evidence grounding, evaluation metrics | implemented, tested with mocked NVIDIA |
-| Real OpenMeter run | **not done** (no Docker on the dev machine yet). Unverified: ingest `Content-Type: application/cloudevents+json` acceptance, meter query row shape with a `subject` filter, sink dedupe on `source`+`id`, whether `api_requests_total` counts our probe events as 1 each |
-| Real NVIDIA call | **not done**: model id `meta/llama-3.3-70b-instruct` and JSON-mode support are unverified for the account |
-| LangGraph wiring | not mine; call the API or the two classes above |
+| Real OpenMeter run | **done** on 2026-10-10 against the 12-container stack: ingest with `application/cloudevents+json`, the meter query with a `subject` filter, and metering of our test events all worked (see [PRESENTATION.md](PRESENTATION.md#8-evidence-and-numbers)). Not verified: the sink's dedupe on `source`+`id` |
+| Real NVIDIA call | **done**: `nvidia/nemotron-3-super-120b-a12b` returns valid JSON for both the Planner and the Analyzer with the project key |
+| LangGraph wiring | `backend/chaosai/orchestration.py`: a linear 6-node graph (plan, baseline, inject, observe, recover, analyze) that calls the two agents |
 | Evaluation dataset | none yet: `app/evaluation/metrics.py` returns counts with every rate; do not quote accuracy before real runs |

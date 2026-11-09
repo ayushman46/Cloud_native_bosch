@@ -170,3 +170,7 @@ class Experiment(BaseModel):
     timestamps: dict[str, datetime] = {}
     history: list[dict[str, Any]] = Field(default_factory=list)
     simulated: bool = False
+    observation: dict[str, Any] | None = None
+    diagnosis: dict[str, Any] | None = None
+    safety_stop: dict[str, Any] | None = None
+    recovery_note: str | None = None

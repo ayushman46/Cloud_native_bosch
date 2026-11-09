@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.agents.observer import ObserverAgent
-from app.config import Settings
-from app.monitoring.collector import MonitorConfig
-from app.monitoring.detection import DetectionConfig
-from app.monitoring.metrics import MetricsConfig
-from app.schemas.injection import FailureType, InjectionEvent, InjectionTimestamps
-from app.storage.repository import InMemoryRepository
+from chaosai.insight.agents.observer import ObserverAgent
+from chaosai.insight.config import Settings
+from chaosai.insight.monitoring.collector import MonitorConfig
+from chaosai.insight.monitoring.detection import DetectionConfig
+from chaosai.insight.monitoring.metrics import MetricsConfig
+from chaosai.insight.schemas.injection import FailureType, InjectionEvent, InjectionTimestamps
+from chaosai.insight.storage.repository import InMemoryRepository
 
 from .fakes import FakeOpenMeter
 

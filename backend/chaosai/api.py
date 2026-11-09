@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,8 +9,15 @@ from .controller import MockController, RemoteController
 from .observer import Observer
 from .llm import NvidiaClient
 from .agents import Planner, Analyzer
-from .orchestration import Runner
+from .orchestration import Runner, planning_context
 from .observer_adapter import to_shared_report
+
+
+class QuietPolling(logging.Filter):
+    """Hide the health check and the dashboard's 1.5 s polling from the access log so experiment events stand out."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        line = record.getMessage()
+        return not ('GET /healthz' in line or ('GET /api/' in line and 'POST' not in line))
 
 
 def create_app(settings: Settings | None = None):
@@ -24,7 +32,14 @@ def create_app(settings: Settings | None = None):
     llm = NvidiaClient(settings)
     planner = Planner(settings, llm)
     analyzer = Analyzer(settings, llm)
-    runner = Runner(settings, store, controller, observer, planner, analyzer)
+    insight = None
+    if settings.mode == 'real':
+        from .insight.config import Settings as InsightSettings
+        from .insight.container import build_container
+        insight = build_container(InsightSettings(openmeter_base_url=settings.openmeter_base_url, openmeter_health_path=settings.openmeter_health_path,
+                                                  openmeter_meter_slug=settings.openmeter_meter_slug, nvidia_api_key=settings.nvidia_api_key or None,
+                                                  **({'nvidia_model': settings.nvidia_model} if settings.nvidia_model else {}), nvidia_base_url=settings.nvidia_base_url))
+    runner = Runner(settings, store, controller, observer, planner, analyzer, insight)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -40,10 +55,13 @@ def create_app(settings: Settings | None = None):
         app.state.openmeter_startup_ok = settings.mode == 'real' and bool(startup_probes) and all(p.reachable for p in startup_probes)
         yield
         await runner.close()
+        if insight:
+            await insight.shutdown()
         await controller.close()
         await observer.close()
         await llm.close()
 
+    logging.getLogger('uvicorn.access').addFilter(QuietPolling())
     app = FastAPI(title='ChaosAI', lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin], allow_methods=['*'], allow_headers=['*'])
 
@@ -83,7 +101,30 @@ def create_app(settings: Settings | None = None):
 
     @app.get('/api/config')
     async def configuration():
-        return {'mode': settings.mode, 'targets': settings.targets, 'nvidia_configured': bool(settings.nvidia_api_key and settings.nvidia_model), 'controller_configured': bool(settings.chaos_control_url and settings.chaos_control_api_key), 'openmeter_configured': bool(settings.openmeter_base_url), 'synthetic_events_enabled': settings.enable_synthetic_events, 'real_injections_enabled': settings.real_injections_enabled, 'limits': {'duration_seconds': settings.max_duration_seconds, 'latency_ms': settings.max_latency_ms, 'requests_per_second': settings.max_rps}}
+        return {'mode': settings.mode, 'targets': settings.targets, 'nvidia_configured': bool(settings.nvidia_api_key and settings.nvidia_model), 'controller_configured': bool(settings.chaos_control_url and settings.chaos_control_api_key), 'openmeter_configured': bool(settings.openmeter_base_url), 'synthetic_events_enabled': settings.enable_synthetic_events, 'real_injections_enabled': settings.real_injections_enabled, 'auto_stop': {'enabled': settings.safety_auto_stop, 'error_rate': settings.abort_error_rate, 'latency_ms': settings.abort_latency_ms, 'min_probes': settings.abort_min_probes}, 'limits': {'duration_seconds': settings.max_duration_seconds, 'latency_ms': settings.max_latency_ms, 'requests_per_second': settings.max_rps}}
+
+    @app.get('/api/dependency-map')
+    async def dependency_map():
+        """Documented data flows, merged with dependencies read from the running containers when the controller is reachable."""
+        from .insight.monitoring.dependency_map import OPENMETER_DEPENDENCY_MAP
+        # 'openmeter-api' in the documented map is the compose service named 'openmeter'
+        alias = {'openmeter': 'openmeter-api'}
+        deployed = {'client', 'openmeter-api', 'sink-worker', 'balance-worker', 'kafka', 'clickhouse', 'redis', 'postgres'}
+        edges = {(e.source, e.target): {**e.model_dump(), 'origin': 'documented'} for e in OPENMETER_DEPENDENCY_MAP if e.source in deployed and e.target in deployed}
+        derived, source = 0, 'documented flows only (no running containers to read in mock mode)'
+        try:
+            topo = await controller.topology()
+            if not topo.get('simulated'):
+                for svc in topo['services']:
+                    for dep in svc['depends_on']:
+                        key = (alias.get(svc['service'], svc['service']), alias.get(dep, dep))
+                        if key[0] in deployed and key[1] in deployed and key not in edges:
+                            edges[key] = {'source': key[0], 'target': key[1], 'relation': 'depends_on', 'origin': 'derived'}
+                            derived += 1
+                source = f"documented flows plus {derived} dependencies derived from {len(topo['services'])} running containers"
+        except Exception as exc:
+            source = f'documented flows only (controller topology unavailable: {exc})'
+        return {'application': 'openmeter', 'edges': list(edges.values()), 'target_aliases': alias, 'source': source}
 
     @app.get('/api/capabilities')
     async def capabilities():
@@ -96,7 +137,7 @@ def create_app(settings: Settings | None = None):
     async def plan(request: PlanRequest):
         try:
             caps = await controller.capabilities()
-            return await planner.plan(request, caps)
+            return await planner.plan(request, caps, planning_context(store))
         except Exception as exc:
             raise HTTPException(422, str(exc))
 
@@ -144,6 +185,15 @@ def create_app(settings: Settings | None = None):
         if not exp.plan:
             raise HTTPException(409, 'Experiment plan is not yet available')
         return to_shared_report(exp)
+
+    @app.get('/api/experiments/{experiment_id}/diagnosis')
+    async def diagnosis(experiment_id: str):
+        exp = store.get(experiment_id)
+        if not exp:
+            raise HTTPException(404, 'Experiment not found')
+        if exp.diagnosis is None:
+            raise HTTPException(409, 'Diagnosis is not available (mock mode, or experiment not finished)')
+        return {'observation': exp.observation, 'diagnosis': exp.diagnosis}
 
     @app.post('/api/experiments/{experiment_id}/abort', response_model=Experiment)
     async def abort(experiment_id: str):

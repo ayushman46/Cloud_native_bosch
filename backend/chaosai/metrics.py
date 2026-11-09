@@ -49,3 +49,40 @@ def summarize(probes: list[Probe], events: list[SyntheticEvent], metered_count: 
         'safety_violations': None,
     }
     return result
+
+
+WEIGHTS = {'availability_during_fault': 35, 'latency_impact': 15, 'recovery_speed': 20, 'data_integrity': 20, 'rollback_verified': 10}
+GRADES = [(90, 'A'), (75, 'B'), (60, 'C'), (40, 'D'), (0, 'F')]
+
+
+def _clamp(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+
+def resilience_score(probes: list[Probe], events: list[SyntheticEvent], metered_count: float | None, timestamps: dict | None, rollback_verified: bool) -> dict:
+    """0-100 score from measured components only. Components without data are listed as unmeasured, not scored as zero.
+    basis is 'simulated' when any probe is simulated, so a mock run can never be mistaken for a measurement."""
+    simulated = any(p.simulated for p in probes)
+    m = {phase: phase_metrics([p for p in probes if p.phase == phase]) for phase in ('baseline', 'fault', 'recovery')}
+    timestamps = timestamps or {}
+    base_p95, fault_p95 = m['baseline']['p95_latency_ms'], m['fault']['p95_latency_ms']
+    recovered, rolled_back = timestamps.get('functional_recovery_at'), timestamps.get('rollback_completed_at')
+    accepted = sum(e.accepted for e in events)
+    comps: dict[str, float | None] = {
+        'availability_during_fault': m['fault']['availability'],
+        'latency_impact': _clamp(1 - (fault_p95 / base_p95 - 1) / 9) if base_p95 and fault_p95 is not None else None,
+        'recovery_speed': _clamp(1 - (max(0, (recovered - rolled_back).total_seconds()) - 2) / 28) if recovered and rolled_back else None,
+        'data_integrity': _clamp(1 - abs(metered_count - accepted) / accepted) if events and accepted and metered_count is not None else None,
+        'rollback_verified': 1.0 if rollback_verified else 0.0,
+    }
+    scored = {k: v for k, v in comps.items() if v is not None}
+    total_weight = sum(WEIGHTS[k] for k in scored)
+    score = round(sum(WEIGHTS[k] * v for k, v in scored.items()) / total_weight * 100, 1) if total_weight else None
+    return {
+        'score': score,
+        'grade': next((g for floor, g in GRADES if score is not None and score >= floor), None),
+        'basis': 'simulated' if simulated else 'measured',
+        'coverage': round(total_weight / sum(WEIGHTS.values()), 2),
+        'components': {k: {'value': None if v is None else round(v, 3), 'weight': WEIGHTS[k], 'points': None if v is None else round(WEIGHTS[k] * v, 1)} for k, v in comps.items()},
+        'unmeasured': [k for k, v in comps.items() if v is None],
+    }

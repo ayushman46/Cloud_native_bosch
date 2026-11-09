@@ -2,6 +2,10 @@ from .schemas import Plan, FaultType
 from .config import Settings
 
 
+# Services whose crash is allowed: the OpenMeter API plus the dependencies it needs (a 'failed dependency' experiment)
+CRASHABLE = {'openmeter', 'sink-worker', 'kafka', 'clickhouse', 'redis', 'postgres'}
+
+
 class SafetyError(ValueError):
     pass
 
@@ -22,8 +26,8 @@ def validate_plan(plan: Plan, settings: Settings, capabilities: dict) -> None:
         raise SafetyError('Latency exceeds local safety limit')
     if p.requests_per_second and p.requests_per_second > settings.max_rps:
         raise SafetyError('Request rate exceeds local safety limit')
-    if plan.failure_type == FaultType.application_crash and plan.target_service != 'openmeter':
-        raise SafetyError('Application crash is restricted to the OpenMeter API')
+    if plan.failure_type == FaultType.application_crash and plan.target_service not in CRASHABLE:
+        raise SafetyError(f'Application crash is limited to: {", ".join(sorted(CRASHABLE))}')
     if plan.failure_type == FaultType.traffic_spike and plan.target_service != 'openmeter':
         raise SafetyError('Traffic spike is restricted to the OpenMeter API')
     if plan.failure_type == FaultType.network_latency:

@@ -91,3 +91,24 @@ def test_real_planner_rejects_command_output(cfg):
         with pytest.raises(LLMError):
             await Planner(cfg,LLM()).plan(PlanRequest(goal='Test application crash'),await MockController(cfg).capabilities())
     asyncio.run(run())
+
+
+def test_real_planner_prompt_includes_dependency_map_and_past_results(cfg):
+    import asyncio, json
+    from chaosai.agents import Planner
+    from chaosai.schemas import PlanRequest
+
+    class Capture:
+        async def json_completion(self, system, user):
+            self.system, self.user = system, json.loads(user)
+            return {'target_service': 'openmeter', 'failure_type': 'application_crash', 'parameters': {'duration_seconds': 1, 'observation_seconds': 1},
+                    'reason': 'highest blast radius', 'expected_impact': 'API unavailable', 'required_observations': ['health'], 'safety_requirements': ['watchdog']}
+
+    cfg.mode = 'real'
+    llm = Capture()
+    ctx = {'dependency_map': ['openmeter-api produces_to kafka'], 'past_experiments': [{'fault': 'network_latency', 'target': 'openmeter', 'score': 91.0}]}
+    caps = {'targets': ['openmeter', 'sink-worker'], 'fault_types': ['application_crash'], 'watchdog_supported': True}
+    plan = asyncio.run(Planner(cfg, llm).plan(PlanRequest(goal='Find the weakest point of OpenMeter'), caps, ctx))
+    assert plan.failure_type.value == 'application_crash'
+    assert llm.user['dependency_map'] == ctx['dependency_map'] and llm.user['past_experiments'] == ctx['past_experiments']
+    assert 'most informative' in llm.system

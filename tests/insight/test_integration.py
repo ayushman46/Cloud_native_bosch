@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from app.agents.analyzer import AnalyzerAgent
-from app.agents.observer import ObserverAgent
-from app.clients.nvidia_client import NvidiaTimeout
-from app.config import Settings
-from app.container import Container
-from app.evaluation import metrics as ev
-from app.main import create_app
-from app.storage.repository import InMemoryRepository
+from chaosai.insight.agents.analyzer import AnalyzerAgent
+from chaosai.insight.agents.observer import ObserverAgent
+from chaosai.insight.clients.nvidia_client import NvidiaTimeout
+from chaosai.insight.config import Settings
+from chaosai.insight.container import Container
+from chaosai.insight.evaluation import metrics as ev
+from chaosai.insight.main import create_app
+from chaosai.insight.storage.repository import InMemoryRepository
 
 from .fakes import FakeOpenMeter
 from .helpers import FakeLLM, good_answer, ids_by_keyword
@@ -73,7 +73,7 @@ async def run_restart_via_api(client, fake, exp="exp_003"):
 
 
 def event_json(exp, **ts):
-    e = event(__import__("app.schemas.injection", fromlist=["FailureType"]).FailureType.SERVICE_RESTART, **ts)
+    e = event(__import__("chaosai.insight.schemas.injection", fromlist=["FailureType"]).FailureType.SERVICE_RESTART, **ts)
     e = e.model_copy(update={"experiment_id": exp})
     return json.loads(e.model_dump_json())
 

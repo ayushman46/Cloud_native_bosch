@@ -4,7 +4,7 @@
 This is the shared interface between the Observer Agent, Orchestrator, Independent Safety Controller, Injector, and Analyzer/Recommender Agent. Commit this folder to the team's repository and have both contributors import the same model definitions instead of recreating field names locally.
 
 ## Scope note
-The current architecture diagram targets `Cal.com + PostgreSQL`. `target_app` is intentionally generic so the same Observer interface can later support Bosch SUNRISE and other repositories.
+The sample application is OpenMeter. `target_app` is kept generic so the interface can describe other applications later.
 
 ## First implementation
 1. Orchestrator creates an `ExperimentContext` with unique `experiment_id` and `run_id`.

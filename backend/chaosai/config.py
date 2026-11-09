@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     nvidia_model: str = ''
     nvidia_base_url: str = 'https://integrate.api.nvidia.com/v1'
     database_path: str = './chaosai.sqlite3'
-    allowed_targets: str = 'openmeter,sink-worker'
+    allowed_targets: str = 'openmeter,sink-worker,kafka,clickhouse,redis,postgres'
     baseline_seconds: float = Field(default=3, gt=0, le=120)
     recovery_seconds: float = Field(default=10, gt=0, le=300)
     poll_seconds: float = Field(default=1, ge=0.01, le=10)
@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     max_rps: int = Field(default=20, ge=1, le=100)
     activation_timeout_seconds: float = Field(default=10, gt=0, le=60)
     rollback_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    late_metering_seconds: float = Field(default=120, ge=0, le=600)
+    safety_auto_stop: bool = True
+    abort_error_rate: float = Field(default=0.8, gt=0, le=1)
+    abort_latency_ms: float = Field(default=5000, gt=0)
+    abort_min_probes: int = Field(default=3, ge=1, le=20)
     frontend_origin: str = 'http://localhost:5173'
 
     @property

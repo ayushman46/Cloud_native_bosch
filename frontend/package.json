@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "dev:demo": "vite --mode demo --port 5180 --strictPort"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.1.2",

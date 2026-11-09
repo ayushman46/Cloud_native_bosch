@@ -4,18 +4,18 @@ import json
 import httpx
 import pytest
 
-from app.agents.analyzer import SYSTEM_PROMPT, AnalyzerAgent, build_user_prompt, parse_llm_json
-from app.agents.evidence import build_diagnostic_evidence
-from app.clients.nvidia_client import (
+from chaosai.insight.agents.analyzer import SYSTEM_PROMPT, AnalyzerAgent, build_user_prompt, parse_llm_json
+from chaosai.insight.agents.evidence import build_diagnostic_evidence
+from chaosai.insight.clients.nvidia_client import (
     NvidiaChatClient,
     NvidiaNotConfigured,
     NvidiaRateLimited,
     NvidiaTimeout,
     NvidiaUnavailable,
 )
-from app.evaluation import metrics as ev
-from app.schemas.analysis import AnalysisReport, AnalysisStatus, ExecutionGroundTruth
-from app.schemas.injection import FailureType
+from chaosai.insight.evaluation import metrics as ev
+from chaosai.insight.schemas.analysis import AnalysisReport, AnalysisStatus, ExecutionGroundTruth
+from chaosai.insight.schemas.injection import FailureType
 
 from .helpers import (
     FakeLLM,
@@ -131,7 +131,7 @@ def _client(handler, **kw):
     async def fake_sleep(s):
         sleeps.append(s)
 
-    c = NvidiaChatClient("key", "meta/llama-3.3-70b-instruct", transport=httpx.MockTransport(handler),
+    c = NvidiaChatClient("key", "nvidia/nemotron-3-super-120b-a12b", transport=httpx.MockTransport(handler),
                          sleep=fake_sleep, **kw)
     c.sleeps = sleeps
     return c

@@ -12,13 +12,13 @@ from chaosai.orchestration import Runner
 
 
 def settings(tmp_path):
-    return Settings(mode='mock', database_path=str(tmp_path/'test.db'), baseline_seconds=1, recovery_seconds=1, poll_seconds=.05)
+    return Settings(mode='mock', database_path=str(tmp_path/'test.db'), baseline_seconds=1, recovery_seconds=1, poll_seconds=.05, late_metering_seconds=.4)
 
 
 def test_safety_rejects_non_allowlisted_and_excessive(tmp_path):
     s = settings(tmp_path)
     caps = {'targets':s.targets,'fault_types':[x.value for x in FaultType], 'watchdog_supported':True,'network_latency_ready':True,'traffic_spike_ready':True}
-    plan = Plan(target_service='kafka', failure_type=FaultType.service_restart, parameters=Parameters(), reason='test target', expected_impact='some impact', required_observations=['health'])
+    plan = Plan(target_service='toxiproxy', failure_type=FaultType.service_restart, parameters=Parameters(), reason='test target', expected_impact='some impact', required_observations=['health'])
     with pytest.raises(SafetyError): validate_plan(plan,s,caps)
     plan.target_service='openmeter'
     plan.parameters.duration_seconds=100
@@ -26,6 +26,17 @@ def test_safety_rejects_non_allowlisted_and_excessive(tmp_path):
     plan.parameters.duration_seconds=10
     caps['watchdog_supported']=False
     with pytest.raises(SafetyError): validate_plan(plan,s,caps)
+
+
+def test_failed_dependency_is_allowed_but_only_for_allowlisted_services(tmp_path):
+    s = settings(tmp_path)
+    caps = {'targets': s.targets, 'fault_types': [x.value for x in FaultType], 'watchdog_supported': True, 'network_latency_ready': True, 'proxy_targets': ['openmeter'], 'traffic_spike_ready': True}
+    mk = lambda target, fault: Plan(target_service=target, failure_type=fault, parameters=Parameters(), reason='test target', expected_impact='some impact', required_observations=['health'])
+    for dep in ('kafka', 'clickhouse', 'redis', 'postgres'):
+        validate_plan(mk(dep, FaultType.application_crash), s, caps)
+    with pytest.raises(SafetyError): validate_plan(mk('toxiproxy', FaultType.application_crash), s, caps)
+    spike = Plan(target_service='kafka', failure_type=FaultType.traffic_spike, parameters=Parameters(requests_per_second=5), reason='test target', expected_impact='some impact', required_observations=['health'])
+    with pytest.raises(SafetyError): validate_plan(spike, s, caps)
 
 
 def test_mock_idempotent_and_abort(tmp_path):
@@ -143,5 +154,33 @@ def test_metering_mismatch_fails_recovery(tmp_path):
         assert done.status==Status.recovery_failed
         assert done.controller.rollback_verified
         assert done.report is not None
+        await o.close(); await llm.close()
+    asyncio.run(run())
+
+
+def test_metering_that_catches_up_late_is_lag_not_failure(tmp_path):
+    """Events counted only after the recovery window mean a lagging pipeline, so the run completes with a note."""
+    async def run():
+        s=settings(tmp_path)
+        s.enable_synthetic_events=True
+        s.max_duration_seconds=2
+        s.recovery_seconds=.3
+        s.late_metering_seconds=5
+        c=MockController(s); o=Observer(s); llm=NvidiaClient(s)
+        real_count=o.query_count
+        t0=asyncio.get_running_loop().time()
+        async def lagging(eid):
+            value=await real_count(eid)
+            behind=asyncio.get_running_loop().time()-t0 < 6.5   # the pipeline catches up well after the 0.3 s recovery window
+            return value-1 if behind and value else value
+        o.query_count=lagging
+        runner=Runner(s,Store(s.database_path),c,o,Planner(s,llm),Analyzer(s,llm))
+        exp=await runner.start(PlanRequest(goal='Test worker restart with slow metering', preferred_fault=FaultType.traffic_spike, preferred_target='openmeter'))
+        await runner.tasks[exp.experiment_id]
+        done=runner.store.get(exp.experiment_id)
+        assert done.status==Status.completed, done.error
+        assert done.recovery_note and 'delayed, not lost' in done.recovery_note
+        assert any('Usage metering lagged' in x for x in done.report.limitations)
+        assert done.metered_count==sum(e.accepted for e in done.events)
         await o.close(); await llm.close()
     asyncio.run(run())

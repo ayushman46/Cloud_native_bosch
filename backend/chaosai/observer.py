@@ -27,8 +27,10 @@ class Observer:
             fault = self._active_mock_fault()
             reachable, latency = True, 12
             if fault:
-                if fault.failure_type.value == 'application_crash':
+                if fault.failure_type.value == 'application_crash' and fault.target_service == 'openmeter':
                     reachable, latency = False, 4
+                elif fault.failure_type.value == 'application_crash':
+                    latency = 60  # a failed dependency: the API still answers health checks but ingestion suffers
                 elif fault.failure_type.value == 'network_latency':
                     latency += fault.parameters.latency_ms
                 elif fault.failure_type.value == 'traffic_spike':
@@ -57,7 +59,7 @@ class Observer:
         event_id = f'{experiment_id}-{phase}'
         if self.settings.mode == 'mock':
             fault = self._active_mock_fault()
-            accepted = not fault or fault.failure_type.value != 'application_crash'
+            accepted = not fault or fault.failure_type.value != 'application_crash' or fault.target_service not in ('openmeter', 'kafka')
             self._mock_events[experiment_id] = self._mock_events.get(experiment_id, 0) + int(accepted)
             return SyntheticEvent(event_id=event_id, phase=phase, accepted=accepted, status_code=204 if accepted else 503, latency_ms=12, simulated=True)
         url = self.settings.openmeter_base_url.rstrip('/') + '/api/v1/events'

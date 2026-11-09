@@ -60,3 +60,31 @@ def test_analyzer_validated_inference(cfg):
         r=await Analyzer(cfg,LLM()).analyze([Probe(phase='fault',endpoint='test',reachable=False)],True,[],None)
         assert r.analysis_source=='nvidia' and r.metrics['fault']['availability']==0
     asyncio.run(run())
+
+
+def test_llm_json_extraction_and_truncation_retry(cfg):
+    import asyncio, httpx
+    from chaosai.llm import NvidiaClient, LLMError, extract_json_object
+    assert extract_json_object('Sure!\n```json\n{"a": 1}\n```') == {'a': 1}
+    assert extract_json_object('{"a": {"b": 2}} trailing') == {'a': {'b': 2}}
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        body = {'choices': [{'finish_reason': 'length' if len(calls) == 1 else 'stop', 'message': {'content': '{"ok": tr' if len(calls) == 1 else '{"ok": true}'}}]}
+        return httpx.Response(200, json=body)
+
+    cfg.nvidia_api_key, cfg.nvidia_model = 'k', 'm'
+    client = NvidiaClient(cfg)
+    client.client = httpx.AsyncClient(base_url='http://x', transport=httpx.MockTransport(handler))
+    assert asyncio.run(client.json_completion('s', 'u')) == {'ok': True} and len(calls) == 2
+
+    def always_cut(request):
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'length', 'message': {'content': '{"x'}}]})
+
+    client.client = httpx.AsyncClient(base_url='http://x', transport=httpx.MockTransport(always_cut))
+    try:
+        asyncio.run(client.json_completion('s', 'u'))
+        raise AssertionError('should fail')
+    except LLMError as exc:
+        assert 'cut off' in str(exc)

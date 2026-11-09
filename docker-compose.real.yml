@@ -1,0 +1,198 @@
+# Real mode: adds the OpenMeter sample app, a Toxiproxy in front of its API, and the Chaos Control service.
+# Use together with docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.real.yml up --build
+# Everything runs on this machine's private compose network. Only loopback ports are published.
+
+x-openmeter-worker-healthcheck: &worker-healthcheck
+  test: ["CMD", "wget", "--spider", "http://localhost:10000/healthz"]
+  interval: 5s
+  timeout: 3s
+  retries: 30
+
+x-openmeter: &openmeter
+  image: ghcr.io/openmeterio/openmeter:latest
+  restart: unless-stopped
+  volumes:
+    - ./sample-app/openmeter-config.yaml:/etc/openmeter/config.yaml:ro
+
+services:
+  # ---------------- sample app: OpenMeter (Apache-2.0, https://github.com/openmeterio/openmeter) ----------------
+  openmeter:
+    <<: *openmeter
+    command: openmeter --address 0.0.0.0:8888 --config /etc/openmeter/config.yaml
+    depends_on:
+      kafka: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      svix: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:48888:8888"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://openmeter:8888/api/v1/debug/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  sink-worker:
+    <<: *openmeter
+    command: openmeter-sink-worker --config /etc/openmeter/config.yaml
+    depends_on:
+      kafka: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      openmeter: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck: *worker-healthcheck
+
+  balance-worker:
+    <<: *openmeter
+    command: openmeter-balance-worker --config /etc/openmeter/config.yaml
+    depends_on:
+      kafka: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      openmeter: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck: *worker-healthcheck
+
+  kafka:
+    image: confluentinc/cp-kafka:8.0.3
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: ca497efe-9f82-4b84-890b-d9969a9a2e1c
+      KAFKA_BROKER_ID: 0
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_MESSAGE_TIMESTAMP_AFTER_MAX_MS: 9223372036854775807
+      JMX_PORT: 9997
+      KAFKA_JMX_OPTS: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=kafka -Dcom.sun.management.jmxremote.rmi.port=9997"
+    healthcheck:
+      test: ["CMD-SHELL", "unset JMX_PORT KAFKA_JMX_OPTS; kafka-topics --bootstrap-server kafka:9092 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12.3-alpine
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: default
+      CLICKHOUSE_DB: openmeter
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://clickhouse:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4.7
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "50mb", "--maxmemory-policy", "noeviction", "--maxmemory-samples", "10"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:14.20-alpine3.23
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: md5
+    command: ["postgres", "-c", "wal_level=logical"]
+    configs:
+      - source: svix_sql
+        target: /docker-entrypoint-initdb.d/svix.sql
+        mode: 0444
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "postgres", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # OpenMeter registers webhook event types with Svix at startup and will not become healthy without it
+  svix:
+    image: svix/svix-server:v1.101
+    restart: unless-stopped
+    environment:
+      WAIT_FOR: "true"
+      SVIX_REDIS_DSN: "redis://redis:6379"
+      SVIX_DB_DSN: "postgresql://svix:svix@postgres/svix"
+      SVIX_CACHE_TYPE: "redis"
+      SVIX_JWT_SECRET: "DUMMY_JWT_SECRET"
+      SVIX_LOG_LEVEL: "info"
+      SVIX_QUEUE_TYPE: "redis"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "svix-server", "healthcheck", "http://localhost:8071"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # ---------------- chaos tooling ----------------
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    restart: unless-stopped
+    # Proxy "openmeter" (listen :8666 -> openmeter:8888) is created by the controller. Admin API is not published.
+
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    restart: unless-stopped
+    environment:
+      CHAOS_CONTROL_API_KEY: ${CHAOS_CONTROL_API_KEY:?set CHAOS_CONTROL_API_KEY in .env}
+      CHAOS_COMPOSE_PROJECT: chaosai
+      ALLOWED_TARGETS: ${ALLOWED_TARGETS:-openmeter,sink-worker,kafka,clickhouse,redis,postgres}
+      MAX_DURATION_SECONDS: ${MAX_DURATION_SECONDS:-30}
+      MAX_LATENCY_MS: ${MAX_LATENCY_MS:-2000}
+      MAX_RPS: ${MAX_RPS:-20}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      toxiproxy: {condition: service_started}
+      openmeter: {condition: service_healthy}
+
+  # ---------------- ChaosAI switched to real mode ----------------
+  backend:
+    environment:
+      MODE: real
+      OPENMETER_BASE_URL: http://toxiproxy:8666
+      OPENMETER_HEALTH_PATH: /api/v1/debug/metrics
+      ENABLE_SYNTHETIC_EVENTS: "true"
+      # OpenMeter needs longer than the mock defaults to become healthy again after a crash
+      ACTIVATION_TIMEOUT_SECONDS: "20"
+      ROLLBACK_TIMEOUT_SECONDS: "60"
+      # probes against a dead server take up to the probe timeout each, so two failures are the practical signal
+      ABORT_MIN_PROBES: "2"
+      RECOVERY_SECONDS: "60"
+      CHAOS_CONTROL_URL: http://controller:9000
+      SINK_WORKER_HEALTH_URL: http://sink-worker:10000/healthz
+      BALANCE_WORKER_HEALTH_URL: http://balance-worker:10000/healthz
+    depends_on:
+      controller: {condition: service_started}
+
+configs:
+  svix_sql:
+    content: |
+      CREATE USER svix WITH PASSWORD 'svix';
+      CREATE DATABASE svix;
+      GRANT ALL PRIVILEGES ON DATABASE svix TO svix;
+      ALTER DATABASE svix OWNER TO svix;

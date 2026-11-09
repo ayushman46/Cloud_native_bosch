@@ -20,8 +20,8 @@ class Settings(BaseSettings):
 
     # NVIDIA hosted LLM (Analyzer). Leave the key unset to run with the Analyzer reporting "unavailable".
     nvidia_api_key: str | None = None
-    nvidia_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_model: str = "nvidia/nemotron-3-super-120b-a12b"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_timeout_seconds: float = 30.0
+    nvidia_timeout_seconds: float = 60.0  # the diagnostic prompt carries the whole observation report; 30 s timed out on a real run
     nvidia_max_retries: int = Field(default=2, ge=0, le=5)
     nvidia_json_mode: bool = True

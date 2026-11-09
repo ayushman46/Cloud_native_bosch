@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
-from app.schemas.monitoring import (
+from chaosai.insight.schemas.monitoring import (
     Anomaly,
     DetectionResult,
     LifecycleTimes,

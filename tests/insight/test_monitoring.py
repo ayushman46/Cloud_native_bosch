@@ -7,14 +7,14 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from app.clients.openmeter_client import OpenMeterClient
-from app.monitoring import metrics as M
-from app.monitoring.collector import MonitorConfig, functional_recovery_time
-from app.monitoring.detection import DetectionConfig, detect, flagged_windows, probe_anomalies, sample_anomalies
-from app.monitoring.http_probes import build_cloudevent, run_health_probe, run_ingest_probe
-from app.monitoring.meter_probes import EventLedger, poll_meter_once, sum_meter_rows
-from app.monitoring.records import Outcome, ProbeRecord, classify_exception, classify_status
-from app.schemas.monitoring import MonitoringSample, Phase, PhaseMetrics, SampleMetrics
+from chaosai.insight.clients.openmeter_client import OpenMeterClient
+from chaosai.insight.monitoring import metrics as M
+from chaosai.insight.monitoring.collector import MonitorConfig, functional_recovery_time
+from chaosai.insight.monitoring.detection import DetectionConfig, detect, flagged_windows, probe_anomalies, sample_anomalies
+from chaosai.insight.monitoring.http_probes import build_cloudevent, run_health_probe, run_ingest_probe
+from chaosai.insight.monitoring.meter_probes import EventLedger, poll_meter_once, sum_meter_rows
+from chaosai.insight.monitoring.records import Outcome, ProbeRecord, classify_exception, classify_status
+from chaosai.insight.schemas.monitoring import MonitoringSample, Phase, PhaseMetrics, SampleMetrics
 
 T0 = datetime(2026, 10, 10, 7, 0, 0, tzinfo=timezone.utc)
 
