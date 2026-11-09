@@ -7,7 +7,7 @@ Every requirement from the Bosch brief, where it is satisfied, and the evidence.
 | Sample app is open source, free, public repo | OpenMeter (Apache-2.0), pulled from its published images. Our repo is MIT (`LICENSE`) | Repo must be made public at submission |
 | Cloud-native: containerized, multi-service, Docker Compose | `docker-compose.real.yml`: OpenMeter API, sink and balance workers, Kafka, ClickHouse, Postgres, Redis, Svix | Verified, 12 containers healthy |
 | Runs entirely in our own sandbox | All ports bound to `127.0.0.1`; faults only on the allowlist | Verified |
-| Document repo link and deployment steps | `README.md` quickstart. Repo link: _add after pushing_ | Link pending |
+| Document repo link and deployment steps | `README.md` quickstart. Repo link: <https://github.com/ayushman46/Cloud_native_bosch> | Done, repo is public |
 | 1. Select and understand the app, map services, dependencies, data flows | `GET /api/dependency-map`, dashboard "What depends on what". Documented flows plus `depends_on` read from the running containers | Verified |
 | 2. Plan experiments intelligently from the dependency map and observed behavior | Planner prompt carries the map and past results (`planning_context` in `orchestration.py`); NVIDIA LLM | Verified live: LLM chose the API from the map |
 | 3. Inject controlled failures with safety limits | `controller/`: crash, restart, latency (Toxiproxy), traffic spike, failed dependency. Allowlist, hard caps, watchdog armed first, evidence required | Verified: latency, crash, restart, Kafka down, traffic spike |

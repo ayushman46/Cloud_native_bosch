@@ -1,9 +1,10 @@
 # Who built what
 
-Fill this in before submission. Panels ask about it, and the repository should show the answer.
+Panels ask about it, so the repository answers it. Credit follows the commit history of this repository.
 
 ## Team
-- Name, role, what they built: _(to fill in)_
+- **Ayushman Chakraborty** ([@ayushman46](https://github.com/ayushman46)), repository owner. The original orchestrator and Planner in `backend/chaosai/`, the first dashboard, the project scripts, and the Docker setup.
+- **Shivaum Shekhar Sharma**. The Observer and Analyzer agents (`backend/chaosai/insight/`), the Chaos Control service (`controller/`), the real-stack integration with OpenMeter, the resilience score and automatic stop, the test suite, and the documentation. Built with Claude Code, as described below.
 
 ## AI assistance
 Large parts of this repository were written with an AI coding assistant (Claude Code) under the team's direction: the Observer and Analyzer (`backend/chaosai/insight/`), the merge into one backend, the Chaos Control service, the resilience score, the automatic stop, the dashboard rebuild, and the documentation. Prompts, design decisions and review came from the team; every design choice is recorded in [DECISIONS.md](DECISIONS.md).

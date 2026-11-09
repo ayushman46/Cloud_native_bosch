@@ -4,6 +4,10 @@ ChaosAI plans a bounded failure experiment against a sample cloud-native app (Op
 
 Built for the Bosch AI-Driven Chaos Engineering challenge. **Sandbox only: ChaosAI never touches production or anyone else's systems.**
 
+![ChaosAI dashboard after a completed experiment (mock mode, so it is labelled Simulation)](docs/dashboard.png)
+
+*The dashboard in mock mode: a completed run with its resilience score, dependency map, measurements and analysis. Real-mode results are in the table below.*
+
 ## Run it (about 5 minutes, needs Docker Desktop)
 
 ```bash
